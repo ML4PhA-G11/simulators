@@ -26,6 +26,7 @@ import os
 import numpy as np
 import matplotlib
 from numba import njit
+from tqdm import tqdm
 
 # =============================================================================
 # 1.  D2Q9 Lattice Definition
@@ -312,7 +313,7 @@ def main(params):
 
     print(f"\nRunning {n_steps} timesteps ...")
 
-    for step in range(1, n_steps + 1):
+    for step in tqdm(range(1, n_steps + 1)):
 
         # -- 5a.  Macroscopic quantities --
         rho = np.sum(f, axis=2)
