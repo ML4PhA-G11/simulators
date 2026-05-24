@@ -25,7 +25,7 @@ import argparse
 import os
 import numpy as np
 import matplotlib
-from numba import njit
+from numba import njit, prange
 from tqdm import tqdm
 
 # =============================================================================
@@ -156,7 +156,7 @@ def build_params(args):
 # =============================================================================
 
 
-@njit
+@njit(parallel=True, fastmath=True, cache=True)
 def equilibrium(rho, ux, uy):
     """
     D2Q9 equilibrium:
@@ -164,13 +164,120 @@ def equilibrium(rho, ux, uy):
     with cs² = 1/3.
     """
     Nx, Ny = rho.shape
-    feq = np.zeros((Nx, Ny, 9))
-    usqr = ux**2 + uy**2
-
-    for i in range(9):
-        cu = c[i, 0] * ux + c[i, 1] * uy
-        feq[:, :, i] = w[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu**2 - 1.5 * usqr)
+    feq = np.empty((Nx, Ny, 9))
+    for x in prange(Nx):
+        for y in range(Ny):
+            usqr = ux[x, y] * ux[x, y] + uy[x, y] * uy[x, y]
+            for i in range(9):
+                cu = c[i, 0] * ux[x, y] + c[i, 1] * uy[x, y]
+                feq[x, y, i] = w[i] * rho[x, y] * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usqr)
     return feq
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def lbm_collide(f, f_out, rho, ux, uy, tau):
+    """Compute macroscopic moments and BGK collision; writes f_out, rho, ux, uy."""
+    Nx = f.shape[0]
+    Ny = f.shape[1]
+    inv_tau = 1.0 / tau
+    for x in prange(Nx):
+        for y in range(Ny):
+            s = 0.0
+            mx = 0.0
+            my = 0.0
+            for i in range(9):
+                fi = f[x, y, i]
+                s += fi
+                mx += fi * c[i, 0]
+                my += fi * c[i, 1]
+            inv_s = 1.0 / s
+            uxv = mx * inv_s
+            uyv = my * inv_s
+            rho[x, y] = s
+            ux[x, y] = uxv
+            uy[x, y] = uyv
+            usqr = uxv * uxv + uyv * uyv
+            for i in range(9):
+                cu = c[i, 0] * uxv + c[i, 1] * uyv
+                feq = w[i] * s * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usqr)
+                fi = f[x, y, i]
+                f_out[x, y, i] = fi - (fi - feq) * inv_tau
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def lbm_post_collide(f, f_out, obstacle, U_inlet):
+    """Obstacle bounce-back (returns Fx,Fy), streaming, wall + inlet/outlet BCs."""
+    Nx = f.shape[0]
+    Ny = f.shape[1]
+
+    # --- Obstacle bounce-back + momentum-exchange force ---
+    Fx = 0.0
+    Fy = 0.0
+    for x in prange(Nx):
+        for y in range(Ny):
+            if obstacle[x, y]:
+                for i in range(9):
+                    pre = f_out[x, y, i]
+                    post = f[x, y, opp[i]]
+                    f_out[x, y, i] = post
+                    Fx += (pre - post) * c[i, 0]
+                    Fy += (pre - post) * c[i, 1]
+
+    # --- Streaming (periodic; wall/inlet/outlet overwrite below) ---
+    for x in prange(Nx):
+        for y in range(Ny):
+            for i in range(9):
+                xs = (x + c[i, 0]) % Nx
+                ys = (y + c[i, 1]) % Ny
+                f[xs, ys, i] = f_out[x, y, i]
+
+    # --- Top & bottom wall bounce-back (no-slip) ---
+    for x in prange(Nx):
+        f[x, 0, 2] = f_out[x, 0, 4]
+        f[x, 0, 5] = f_out[x, 0, 7]
+        f[x, 0, 6] = f_out[x, 0, 8]
+        f[x, Ny - 1, 4] = f_out[x, Ny - 1, 2]
+        f[x, Ny - 1, 7] = f_out[x, Ny - 1, 5]
+        f[x, Ny - 1, 8] = f_out[x, Ny - 1, 6]
+
+    # --- Outlet BC: Zou-He pressure (rho = 1) ---
+    rho_out = 1.0
+    for y in range(1, Ny - 1):
+        ux_out = -1.0 + (
+            f[Nx - 1, y, 0] + f[Nx - 1, y, 2] + f[Nx - 1, y, 4]
+            + 2.0 * (f[Nx - 1, y, 1] + f[Nx - 1, y, 5] + f[Nx - 1, y, 8])
+        ) / rho_out
+        if ux_out < 0.0:
+            ux_out = 0.0
+        elif ux_out > 0.5:
+            ux_out = 0.5
+        f[Nx - 1, y, 3] = f[Nx - 1, y, 1] - (2.0 / 3.0) * rho_out * ux_out
+        f[Nx - 1, y, 7] = (
+            f[Nx - 1, y, 5] + 0.5 * (f[Nx - 1, y, 2] - f[Nx - 1, y, 4]) - (1.0 / 6.0) * rho_out * ux_out
+        )
+        f[Nx - 1, y, 6] = (
+            f[Nx - 1, y, 8] - 0.5 * (f[Nx - 1, y, 2] - f[Nx - 1, y, 4]) - (1.0 / 6.0) * rho_out * ux_out
+        )
+
+    # Outlet corners: zero-gradient fallback
+    f[Nx - 1, 0, 3] = f[Nx - 2, 0, 3]
+    f[Nx - 1, 0, 6] = f[Nx - 2, 0, 6]
+    f[Nx - 1, 0, 7] = f[Nx - 2, 0, 7]
+    f[Nx - 1, Ny - 1, 3] = f[Nx - 2, Ny - 1, 3]
+    f[Nx - 1, Ny - 1, 6] = f[Nx - 2, Ny - 1, 6]
+    f[Nx - 1, Ny - 1, 7] = f[Nx - 2, Ny - 1, 7]
+
+    # --- Inlet BC: Zou-He velocity (ux = U_inlet) ---
+    for y in range(Ny):
+        rho_in = (
+            f[0, y, 0] + f[0, y, 2] + f[0, y, 4]
+            + 2.0 * (f[0, y, 3] + f[0, y, 6] + f[0, y, 7])
+        ) / (1.0 - U_inlet)
+        f[0, y, 1] = f[0, y, 3] + (2.0 / 3.0) * rho_in * U_inlet
+        f[0, y, 5] = f[0, y, 7] - 0.5 * (f[0, y, 2] - f[0, y, 4]) + (1.0 / 6.0) * rho_in * U_inlet
+        f[0, y, 8] = f[0, y, 6] + 0.5 * (f[0, y, 2] - f[0, y, 4]) + (1.0 / 6.0) * rho_in * U_inlet
+
+    return Fx, Fy
 
 
 # =============================================================================
@@ -311,92 +418,31 @@ def main(params):
     drag_history = np.zeros(n_steps)
     lift_history = np.zeros(n_steps)
 
+    # Pre-allocated buffers reused every step (avoids per-iteration allocation)
+    f_out = np.empty_like(f)
+    rho = np.empty((Nx, Ny))
+    ux = np.empty((Nx, Ny))
+    uy = np.empty((Nx, Ny))
+
     print(f"\nRunning {n_steps} timesteps ...")
 
     for step in tqdm(range(1, n_steps + 1)):
 
-        # -- 5a.  Macroscopic quantities --
-        rho = np.sum(f, axis=2)
-        ux = np.sum(f * c[:, 0], axis=2) / rho
-        uy = np.sum(f * c[:, 1], axis=2) / rho
-
-        # -- 5b.  Collision (BGK) --
-        feq = equilibrium(rho, ux, uy)
-        f_out = f - (f - feq) / tau
+        # -- 5a/b. Macroscopic quantities + BGK collision (JIT) --
+        lbm_collide(f, f_out, rho, ux, uy, tau)
 
         # save distributions to csv
         if save_every > 0 and step % save_every == 0:
             np.save(os.path.join(out_dir, f"fpre_{step:06d}.npy"), f)
             np.save(os.path.join(out_dir, f"fpost_{step:06d}.npy"), f_out)
 
-        # -- 5c.  Force computation & bounce-back on obstacle --
-        #
-        # Momentum-exchange method:  the force on the solid equals the
-        # change in momentum of the distributions at obstacle nodes
-        # during the bounce-back step.
-        #
-        #   F = Σ c_i · (f_out_before_BB − f_out_after_BB)
-        #
-        # This is exact for filled obstacles because interior solid
-        # nodes have symmetric distributions (f_i = f_{opp_i} in
-        # steady state) and contribute zero net momentum change.
-        f_pre_bb = f_out[obstacle].copy()
-
-        for i in range(ndir):
-            f_out[obstacle, i] = f[obstacle, opp[i]]
-
-        diff = f_pre_bb - f_out[obstacle]
-        Fx = np.sum(diff * c[:, 0])
-        Fy = np.sum(diff * c[:, 1])
+        # -- 5c-g. Bounce-back + force, streaming, wall + inlet/outlet BCs (JIT) --
+        Fx, Fy = lbm_post_collide(f, f_out, obstacle, U_inlet)
         drag_history[step - 1] = Fx
         lift_history[step - 1] = Fy
 
         if csv_file is not None and step % csv_every == 0:
             csv_file.write(f"{step},{step},{Fx:.8e},{Fy:.8e}\n")
-
-        # -- 5d.  Streaming --
-        for i in range(ndir):
-            f[:, :, i] = np.roll(f_out[:, :, i], shift=c[i, 0], axis=0)
-            f[:, :, i] = np.roll(f[:, :, i], shift=c[i, 1], axis=1)
-
-        # -- 5e.  Top & bottom wall bounce-back (no-slip) --
-        # Applied BEFORE inlet/outlet so Zou-He reads valid wall values.
-        f[:, 0, 2] = f_out[:, 0, 4]  # north  <- south
-        f[:, 0, 5] = f_out[:, 0, 7]  # NE     <- SW
-        f[:, 0, 6] = f_out[:, 0, 8]  # NW     <- SE
-        f[:, -1, 4] = f_out[:, -1, 2]  # south  <- north
-        f[:, -1, 7] = f_out[:, -1, 5]  # SW     <- NE
-        f[:, -1, 8] = f_out[:, -1, 6]  # SE     <- NW
-
-        # -- 5f.  Outlet BC: Zou-He pressure (rho = 1) --
-        # Unknown: f_3, f_6, f_7 (west-moving, wrapped from x=0).
-        # Interior y only; outlet corners use zero-gradient fallback.
-        rho_out = 1.0
-        iy = slice(1, -1)
-        ux_out = (
-            -1.0
-            + (f[-1, iy, 0] + f[-1, iy, 2] + f[-1, iy, 4] + 2.0 * (f[-1, iy, 1] + f[-1, iy, 5] + f[-1, iy, 8]))
-            / rho_out
-        )
-        ux_out = np.clip(ux_out, 0.0, 0.5)
-
-        f[-1, iy, 3] = f[-1, iy, 1] - (2.0 / 3.0) * rho_out * ux_out
-        f[-1, iy, 7] = f[-1, iy, 5] + 0.5 * (f[-1, iy, 2] - f[-1, iy, 4]) - (1.0 / 6.0) * rho_out * ux_out
-        f[-1, iy, 6] = f[-1, iy, 8] - 0.5 * (f[-1, iy, 2] - f[-1, iy, 4]) - (1.0 / 6.0) * rho_out * ux_out
-
-        # Outlet corners: zero-gradient fallback
-        for yc in [0, Ny - 1]:
-            f[-1, yc, 3] = f[-2, yc, 3]
-            f[-1, yc, 6] = f[-2, yc, 6]
-            f[-1, yc, 7] = f[-2, yc, 7]
-
-        # -- 5g.  Inlet BC: Zou-He, fixed velocity (ux = U_inlet) --
-        # Unknown: f_1, f_5, f_8 (east-moving, wrapped from x=Nx-1).
-        rho_in = (f[0, :, 0] + f[0, :, 2] + f[0, :, 4] + 2.0 * (f[0, :, 3] + f[0, :, 6] + f[0, :, 7])) / (1.0 - U_inlet)
-
-        f[0, :, 1] = f[0, :, 3] + (2.0 / 3.0) * rho_in * U_inlet
-        f[0, :, 5] = f[0, :, 7] - 0.5 * (f[0, :, 2] - f[0, :, 4]) + (1.0 / 6.0) * rho_in * U_inlet
-        f[0, :, 8] = f[0, :, 6] + 0.5 * (f[0, :, 2] - f[0, :, 4]) + (1.0 / 6.0) * rho_in * U_inlet
 
         # -- 5h.  Visualisation & progress --
         should_render = (
