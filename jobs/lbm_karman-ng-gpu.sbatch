@@ -26,8 +26,10 @@ cd "$PROJECT_DIR"
 mkdir -p jobs/logs
 
 # --- Run parameters (kept in sync with the CPU sibling job) ------------------
-RESOLUTION=500          # 2x finer than the default 250 lu/m
-N_STEPS=20000           # matches 10000 steps at res=250 in physical time
+#RESOLUTION=500          # 2x finer than the default 250 lu/m
+RESOLUTION=1000          # 4x finer than the default 250 lu/m
+#N_STEPS=20000           # matches 10000 steps at res=250 in physical time
+N_STEPS=40000           # matches 10000 steps at res=250 in physical time
 SAVE_EVERY=1000         # 20 fpre/fpost snapshot pairs
 OUT_DIR="output/gpu_res${RESOLUTION}_n${N_STEPS}"
 
