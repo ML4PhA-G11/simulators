@@ -67,7 +67,7 @@ srun .venv/bin/python lbm_karman-ng-gpu.py \
     --resolution "$RESOLUTION" \
     --n-steps "$N_STEPS" \
     --save-every "$SAVE_EVERY" \
-    --plot-mode none \
+    --plot-mode velocity \
     --csv-every 1 \
     --out-dir "$OUT_DIR"
 
