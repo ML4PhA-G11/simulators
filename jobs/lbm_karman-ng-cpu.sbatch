@@ -11,7 +11,6 @@
 # -----------------------------------------------------------------------------
 
 #SBATCH --job-name=lbm-cpu-r500
-#SBATCH --account=<YOUR_PROJECT>
 #SBATCH --partition=rome
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -38,8 +37,6 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-16}"
 
 # --- Environment -------------------------------------------------------------
 module purge
-module load 2024
-module load Python/3.12.3-GCCcore-13.3.0
 
 # Assumes a uv-managed .venv in the project root.
 # Bootstrap once (locally or on a login node) with:
@@ -59,6 +56,8 @@ echo "  out-dir    = $OUT_DIR"
 echo "  threads    = $NUMBA_NUM_THREADS"
 echo
 
+date
+
 # --- Run ---------------------------------------------------------------------
 srun .venv/bin/python lbm_karman-ng.py \
     --resolution "$RESOLUTION" \
@@ -67,3 +66,6 @@ srun .venv/bin/python lbm_karman-ng.py \
     --plot-mode none \
     --csv-every 1 \
     --out-dir "$OUT_DIR"
+
+date
+

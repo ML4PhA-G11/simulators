@@ -10,7 +10,6 @@
 # -----------------------------------------------------------------------------
 
 #SBATCH --job-name=lbm-gpu-r500
-#SBATCH --account=<YOUR_PROJECT>
 #SBATCH --partition=gpu_h100
 #SBATCH --gpus=1
 #SBATCH --ntasks=1
@@ -36,9 +35,8 @@ OUT_DIR="output/gpu_res${RESOLUTION}_n${N_STEPS}"
 # Adjust module versions to whatever is current on Snellius. CUDA must be
 # loaded so Taichi can find libcuda.so / libcudart.so for the H100.
 module purge
-module load 2024
-module load Python/3.12.3-GCCcore-13.3.0
-module load CUDA/12.6.0
+module load 2025
+module load CUDA/12.8.0
 
 # Assumes a uv-managed .venv in the project root with taichi installed.
 # Bootstrap once (locally or on a login node) with:
@@ -58,6 +56,8 @@ echo "  save-every = $SAVE_EVERY"
 echo "  out-dir    = $OUT_DIR"
 echo
 
+date
+
 # --- Run ---------------------------------------------------------------------
 srun .venv/bin/python lbm_karman-ng-gpu.py \
     --arch cuda \
@@ -68,3 +68,5 @@ srun .venv/bin/python lbm_karman-ng-gpu.py \
     --plot-mode none \
     --csv-every 1 \
     --out-dir "$OUT_DIR"
+
+date
