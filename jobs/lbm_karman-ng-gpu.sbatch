@@ -30,8 +30,8 @@ mkdir -p jobs/logs
 RESOLUTION=1000          # 4x finer than the default 250 lu/m
 #N_STEPS=20000           # matches 10000 steps at res=250 in physical time
 N_STEPS=40000           # matches 10000 steps at res=250 in physical time
-SAVE_EVERY=1000         # 20 fpre/fpost snapshot pairs
-OUT_DIR="output/gpu_res${RESOLUTION}_n${N_STEPS}"
+SAVE_EVERY=1         # 20 fpre/fpost snapshot pairs
+OUT_DIR="/home/scur0076/scratch-shared/output-lbm-data-04-40000steps-data.per.1step-gpu-npy/gpu_res${RESOLUTION}_n${N_STEPS}_save${SAVE_EVERY}"
 
 # --- Environment -------------------------------------------------------------
 # Adjust module versions to whatever is current on Snellius. CUDA must be
